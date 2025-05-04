@@ -17,11 +17,11 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
 	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
 type SavedRequest struct {
@@ -184,19 +184,47 @@ func (s *Server) handleReceive(w http.ResponseWriter, r *http.Request) {
     }
     log.Printf("[%d] ✓ Database connection verified", requestID)
 
-    // Attempt to save to database, capturing any error
-    log.Printf("[%d] 💾 Attempting to save request to database", requestID)
-    result := s.db.Create(sr)
-    if result.Error != nil {
-        log.Printf("[%d] ❌ DB create error: %v", requestID, result.Error)
-        log.Printf("[%d] ℹ️ Rows affected: %d", requestID, result.RowsAffected)
+    // Check if request already exists in database
+    var existingRequest SavedRequest
+    result := s.db.Where("method = ? AND host = ? AND path = ?", sr.Method, sr.Host, sr.Path).First(&existingRequest)
+    
+    if result.Error == nil {
+        // Request exists, update it
+        log.Printf("[%d] 🔄 Found existing request with ID=%d, updating instead of creating new", 
+            requestID, existingRequest.ID)
+        
+        // Update existing record
+        sr.ID = existingRequest.ID // Keep the same ID
+        updateResult := s.db.Save(sr)
+        
+        if updateResult.Error != nil {
+            log.Printf("[%d] ❌ DB update error: %v", requestID, updateResult.Error)
+            http.Error(w, "db error: "+updateResult.Error.Error(), http.StatusInternalServerError)
+            return
+        }
+        
+        log.Printf("[%d] ✅ Updated existing request: ID=%d, Method=%s, Host=%s, Path=%s, RowsAffected=%d", 
+            requestID, sr.ID, sr.Method, sr.Host, sr.Path, updateResult.RowsAffected)
+    } else if result.Error == gorm.ErrRecordNotFound {
+        // Request doesn't exist, create a new one
+        log.Printf("[%d] 💾 Request doesn't exist, creating new record", requestID)
+        
+        createResult := s.db.Create(sr)
+        if createResult.Error != nil {
+            log.Printf("[%d] ❌ DB create error: %v", requestID, createResult.Error)
+            log.Printf("[%d] ℹ️ Rows affected: %d", requestID, createResult.RowsAffected)
+            http.Error(w, "db error: "+createResult.Error.Error(), http.StatusInternalServerError)
+            return
+        }
+        
+        log.Printf("[%d] ✅ Created new request: ID=%d, Method=%s, Host=%s, Path=%s, RowsAffected=%d", 
+            requestID, sr.ID, sr.Method, sr.Host, sr.Path, createResult.RowsAffected)
+    } else {
+        // Error occurred during search
+        log.Printf("[%d] ❌ DB search error: %v", requestID, result.Error)
         http.Error(w, "db error: "+result.Error.Error(), http.StatusInternalServerError)
         return
     }
-    
-    // Log successful insertion with more details
-    log.Printf("[%d] ✅ Saved request: ID=%d, Method=%s, Host=%s, Path=%s, RowsAffected=%d", 
-        requestID, sr.ID, sr.Method, sr.Host, sr.Path, result.RowsAffected)
 
     w.WriteHeader(http.StatusCreated)
     fmt.Fprintln(w, "saved")
