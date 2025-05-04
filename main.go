@@ -247,15 +247,19 @@ func runReplay(db *gorm.DB, cookies, csrf, proxyAddr string) {
             req.Header.Set("Cookie", cookies)
         }
 
-        // Override CSRF token headers if provided
+        // Override CSRF token headers if provided - only if they already exist in the original request
         if csrf != "" {
+            var csrfHeaderFound bool
             for name := range req.Header {
                 if strings.Contains(strings.ToLower(name), "csrf") {
                     req.Header.Set(name, csrf)
+                    csrfHeaderFound = true
+                    log.Printf("Updated existing CSRF header [%s] with new token", name)
                 }
             }
-            if req.Header.Get("X-CSRF-Token") == "" {
-                req.Header.Set("X-CSRF-Token", csrf)
+            // Don't add X-CSRF-Token if no CSRF headers were found
+            if !csrfHeaderFound {
+                log.Printf("No CSRF headers found in original request, skipping CSRF token injection")
             }
         }
 
